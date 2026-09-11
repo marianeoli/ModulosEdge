@@ -7,21 +7,21 @@ reencena a chegada de um veículo na Casa #104 para mostrar, em código, as
 regras de TRANSMISSÃO, PROCESSAMENTO e ABSTRAÇÃO em cada camada:
 
     EDGE  -> Gateway residencial (dentro de cada casa)
-             Faz a FUSÃO câmera + sensor de presença e age sozinho, em
-             milissegundos: abre o portão e liga os refletores, mesmo sem
-             conexão externa.
+              Faz a FUSÃO câmera + sensor de presença e age sozinho, em
+              milissegundos: abre o portão e liga os refletores, mesmo sem
+              conexão externa.
 
     FOG   -> Servidor de borda na antena OpenRAN de cada bairro
-             Correlaciona o acesso com o sensor de trânsito público do
-             quarteirão. Se confirmado, aplica Network Slicing e aciona a
-             iluminação pública ao longo do trajeto do morador.
+              Correlaciona o acesso com o sensor de trânsito público do
+              quarteirão. Se confirmado, aplica Network Slicing e aciona a
+              iluminação pública ao longo do trajeto do morador.
 
     CLOUD -> Aplicação de Gestão de Propriedades e Segurança Global
-             Dispara notificação push, ajusta a climatização, agenda a
-             recarga do veículo elétrico na tarifa reduzida, e usa as
-             imagens de placa para re-treinar o modelo de visão
-             computacional — distribuindo a atualização de volta para
-             os gateways Edge e os nós de Fog.
+              Dispara notificação push, ajusta a climatização, agenda a
+              recarga do veículo elétrico na tarifa reduzida, e usa as
+              imagens de placa para re-treinar o modelo de visão
+              computacional — distribuindo a atualização de volta para
+              os gateways Edge e os nós de Fog.
 
 Como usar em sala:
     python safeliving_edge_fog_cloud.py
@@ -108,7 +108,10 @@ class DispositivoResidencial:
         elif self.tipo == "sensor_queda_idoso":
             # Evento raro (~6% de chance por ciclo): idoso sofre uma queda.
             valor = "queda_detectada" if random.random() < 0.06 else "normal"
-
+        elif self.tipo == "sensor_chuva":
+            # Simulação do sensor de chuva: ~20% de chance de chuva por ciclo
+            chovendo = random.random() < 0.20
+            valor = round(random.uniform(5.0, 30.0), 1) if chovendo else 0.0
         else:
             valor = None
 
@@ -129,7 +132,7 @@ class CasaInteligente:
     PROCESSAMENTO: funde câmera + sensor de presença e decide sozinha,
                    em milissegundos, sem depender de rede externa.
     ABSTRAÇÃO: envia à Fog só o evento de acesso (casa + placa + hora),
-               nunca o vídeo bruto da câmera.
+                nunca o vídeo bruto da câmera.
     """
 
     def __init__(self, casa_numero, bairro_id, dispositivos):
@@ -155,7 +158,7 @@ class CasaInteligente:
             print(f"    [CASA #{self.casa_numero}] presença detectada, mas sem placa "
                   f"confirmada -> portão permanece fechado (fusão evita ação incorreta).")
 
-    # -------- NOVO MÓDULO: sensor de fumaça/gás na cozinha --------
+    # -------- MÓDULO: sensor de fumaça/gás na cozinha --------
         if nivel_gas is not None and nivel_gas >= LIMIAR_GAS_PPM:
             print(f"    [CASA #{self.casa_numero}] AÇÃO AUTÔNOMA (ms): sensor de fumaça/gás "
                   f"detectou {nivel_gas:.0f} ppm (acima do limiar de {LIMIAR_GAS_PPM}) "
@@ -177,6 +180,15 @@ class CasaInteligente:
     
         return None
 
+    # -------- MÓDULO: sensor de chuva --------
+    def processar_chuva(self, leituras):
+        sensor = leituras.get("sensor_chuva")
+        if sensor and sensor["valor"] >= 15.0:
+            print(f"    [CASA #{self.casa_numero}] AÇÃO AUTÔNOMA (Edge - Chuva): Chuva intensa "
+                  f"({sensor['valor']} mm) -> Fecha janelas e recolhe toldo localmente em ms.")
+            return "ALERTA_CHUVA_INTENSA", sensor["valor"]
+        return None, None
+
     # ---------------- REGRA DE ABSTRAÇÃO NA CASA (EDGE) ----------------
     def abstrair_acesso(self, placa, hora):
         return {
@@ -196,10 +208,6 @@ class CasaInteligente:
     # --------------------------------------------------------------------------
 
     def abstrair_emergencia_gas(self, nivel_ppm, hora):
-        # ABSTRAÇÃO: diferente dos outros eventos, aqui sobe também o nível
-        # medido e uma flag de urgência — a Fog precisa desse contexto extra
-        # para decidir se vale correlacionar com casas vizinhas (ex.: possível
-        # vazamento na rede de gás do quarteirão, não só da própria casa).
         return {
             "tipo_evento": "EMERGENCIA_GAS_DETECTADO",
             "casa_numero": self.casa_numero,
@@ -217,12 +225,21 @@ class CasaInteligente:
                 "necessita_ambulancia": True
             }
 
+    def abstrair_chuva(self, precipitacao, hora):
+        return {
+            "tipo_evento": "ALERTA_CHUVA_INTENSA",
+            "casa_numero": self.casa_numero,
+            "precipitacao_mm": precipitacao,
+            "hora": hora,
+        }
+
     def ciclo(self, ciclo_atual):
         leituras = {disp.tipo: disp.gerar_leitura(ciclo_atual) for disp in self.dispositivos}
         eventos = []
 
         eventos_processados = self.processar(leituras)
         tipo_evento_saude = self.processar_saude(leituras)
+        t_chuva, val_chuva = self.processar_chuva(leituras)
 
         # ---------------- REGRA DE TRANSMISSÃO NA CASA (EDGE) ----------------
         if tipo_evento_saude == "EMERGENCIA_MEDICA_QUEDA":
@@ -236,6 +253,10 @@ class CasaInteligente:
             elif tipo_evento == "EMERGENCIA_GAS_DETECTADO":
                 time.sleep(LATENCIA_CASA_PARA_5G_SEG)
                 eventos.append(self.abstrair_emergencia_gas(dado, leituras["sensor_fumaca_gas"]["hora"]))
+
+        if t_chuva == "ALERTA_CHUVA_INTENSA":
+            time.sleep(LATENCIA_CASA_PARA_5G_SEG)
+            eventos.append(self.abstrair_chuva(val_chuva, leituras["sensor_chuva"]["hora"]))
 
         if random.random() < 0.3:  # telemetria de energia é enviada só ocasionalmente
             time.sleep(LATENCIA_CASA_PARA_5G_SEG)
@@ -261,7 +282,7 @@ class EstacaoORAN:
                    quarteirão; se confirmado, aplica Network Slicing e
                    aciona a iluminação pública do trajeto.
     ABSTRAÇÃO: entrega à Cloud um evento consolidado do bairro, não os
-               pacotes brutos recebidos de cada casa.
+                pacotes brutos recebidos de cada casa.
     """
 
     def __init__(self, bairro_id, casas_atendidas):
@@ -350,8 +371,8 @@ class NucleoCentral:
     PROCESSAMENTO: dispara integrações de alto nível (push, climatização,
                    recarga do veículo) e re-treina o modelo de visão.
     ABSTRAÇÃO: não vê o vídeo nem os frames — só o evento de acesso já
-               resolvido (casa, placa, horário), o suficiente para
-               personalizar o app do morador e alimentar o ML.
+                resolvido (casa, placa, horário), o suficiente para
+                personalizar o app do morador e alimentar o ML.
     """
 
     def __init__(self, fog_nodes, casas):
@@ -627,7 +648,7 @@ class NucleoCentral:
 # MONTAGEM DA SIMULAÇÃO
 # ======================================================================
 def montar_ambiente():
-    tipos = ["camera_garagem", "sensor_presenca_garagem", "medidor_energia", "sensor_fumaca_gas", "sensor_queda_idoso"]
+    tipos = ["camera_garagem", "sensor_presenca_garagem", "medidor_energia", "sensor_fumaca_gas", "sensor_queda_idoso", "sensor_chuva"]
 
     def criar_casa(numero, bairro_id):
         dispositivos = [DispositivoResidencial(f"D{numero}{t}", t, casa_numero=numero) for t in tipos]
