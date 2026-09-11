@@ -6,8 +6,8 @@ Como trabalho da disciplina de Redes Sem Fio, este repositório contém a parte 
 
 ## Arquitetura
 
-**Edge** | Gateway dentro de cada casa | `DispositivoResidencial` (sensores) + `CasaInteligente` (gateway) |
-**Fog** | Antena OpenRAN do bairro | `EstacaoORAN` |
+**Edge** | Gateway dentro de cada casa | `DispositivoResidencial` (sensores) + `CasaInteligente` (gateway) |  
+**Fog** | Antena OpenRAN do bairro | `EstacaoORAN` |  
 **Cloud** | Servidor central | `NucleoCentral` |
 
 Cada camada segue os mesmos três princípios:
