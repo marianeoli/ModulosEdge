@@ -105,6 +105,10 @@ class DispositivoResidencial:
             # acima do limite de segurança na cozinha.
             vazamento_detectado = random.random() < 0.05
             valor = round(random.uniform(400, 900), 0) if vazamento_detectado else round(random.uniform(0, 50), 0)
+        elif self.tipo == "sensor_queda_idoso":
+            # Evento raro (~6% de chance por ciclo): idoso sofre uma queda.
+            valor = "queda_detectada" if random.random() < 0.06 else "normal"
+
         else:
             valor = None
 
@@ -138,22 +142,20 @@ class CasaInteligente:
     def processar(self, leituras):
         placa = leituras["camera_garagem"]["valor"]
         presenca = leituras["sensor_presenca_garagem"]["valor"]
+        nivel_gas = leituras["sensor_fumaca_gas"]["valor"]
 
         eventos_processados = []  # lista de (tipo_evento, dado_extra)
 
-    # -------- MÓDULO: sensor de queda --------
-    def processar_saude(self, leituras):
-        sensor = leituras.get("sensor_queda_idoso")
-        
-        if sensor and sensor["valor"] == "queda_detectada":
-            print(f"    [CASA #{self.casa_numero}] AÇÃO AUTÔNOMA (ms): Queda severa detectada! "
-                  f"-> Destrancando porta principal, acendendo todas as luzes e desligando o fogão.")
-            return "EMERGENCIA_MEDICA_QUEDA"
-    
-        return None
+        if placa and presenca == 1:
+            print(f"    [CASA #{self.casa_numero}] AÇÃO AUTÔNOMA (ms): fusão câmera+presença "
+                  f"confirma veículo na zona de entrada -> liga refletores e abre o portão.")
+            eventos_processados.append(("ACESSO_VEICULO_AUTORIZADO", placa))
+
+        if presenca == 1 and not placa:
+            print(f"    [CASA #{self.casa_numero}] presença detectada, mas sem placa "
+                  f"confirmada -> portão permanece fechado (fusão evita ação incorreta).")
 
     # -------- NOVO MÓDULO: sensor de fumaça/gás na cozinha --------
-        nivel_gas = leituras["sensor_fumaca_gas"]["valor"]
         if nivel_gas is not None and nivel_gas >= LIMIAR_GAS_PPM:
             print(f"    [CASA #{self.casa_numero}] AÇÃO AUTÔNOMA (ms): sensor de fumaça/gás "
                   f"detectou {nivel_gas:.0f} ppm (acima do limiar de {LIMIAR_GAS_PPM}) "
@@ -161,17 +163,19 @@ class CasaInteligente:
             eventos_processados.append(("EMERGENCIA_GAS_DETECTADO", nivel_gas))
    #----------------------------------------------------------------
 
-        if placa and presenca == 1:
-            print(f"    [CASA #{self.casa_numero}] AÇÃO AUTÔNOMA (ms): fusão câmera+presença "
-                  f"confirma veículo na zona de entrada -> liga refletores e abre o portão.")
-            return "ACESSO_VEICULO_AUTORIZADO", placa
-
-        if presenca == 1 and not placa:
-            print(f"    [CASA #{self.casa_numero}] presença detectada, mas sem placa "
-                  f"confirmada -> portão permanece fechado (fusão evita ação incorreta).")
-
-        return None, None
+        return eventos_processados
     # ------------------------------------------------------------------------------------------
+
+    # -------- MÓDULO: sensor de queda --------
+    def processar_saude(self, leituras):
+        sensor = leituras.get("sensor_queda_idoso")
+
+        if sensor and sensor["valor"] == "queda_detectada":
+            print(f"    [CASA #{self.casa_numero}] AÇÃO AUTÔNOMA (ms): Queda severa detectada! "
+                  f"-> Destrancando porta principal, acendendo todas as luzes e desligando o fogão.")
+            return "EMERGENCIA_MEDICA_QUEDA"
+    
+        return None
 
     # ---------------- REGRA DE ABSTRAÇÃO NA CASA (EDGE) ----------------
     def abstrair_acesso(self, placa, hora):
@@ -217,20 +221,21 @@ class CasaInteligente:
         leituras = {disp.tipo: disp.gerar_leitura(ciclo_atual) for disp in self.dispositivos}
         eventos = []
 
-        tipo_evento, placa = self.processar(leituras)
+        eventos_processados = self.processar(leituras)
         tipo_evento_saude = self.processar_saude(leituras)
 
         # ---------------- REGRA DE TRANSMISSÃO NA CASA (EDGE) ----------------
         if tipo_evento_saude == "EMERGENCIA_MEDICA_QUEDA":
             eventos.append(self.abstrair_emergencia_medica(leituras["sensor_queda_idoso"]["hora"]))
 
-        if tipo_evento == "ACESSO_VEICULO_AUTORIZADO":
-            time.sleep(LATENCIA_CASA_PARA_5G_SEG)
-            eventos.append(self.abstrair_acesso(placa, leituras["camera_garagem"]["hora"]))
+        for tipo_evento, dado in eventos_processados:
+            if tipo_evento == "ACESSO_VEICULO_AUTORIZADO":
+                time.sleep(LATENCIA_CASA_PARA_5G_SEG)
+                eventos.append(self.abstrair_acesso(dado, leituras["camera_garagem"]["hora"]))
 
-        elif tipo_evento == "EMERGENCIA_GAS_DETECTADO":
-            time.sleep(LATENCIA_CASA_PARA_5G_SEG)
-            eventos.append(self.abstrair_emergencia_gas(dado, leituras["sensor_fumaca_gas"]["hora"]))
+            elif tipo_evento == "EMERGENCIA_GAS_DETECTADO":
+                time.sleep(LATENCIA_CASA_PARA_5G_SEG)
+                eventos.append(self.abstrair_emergencia_gas(dado, leituras["sensor_fumaca_gas"]["hora"]))
 
         if random.random() < 0.3:  # telemetria de energia é enviada só ocasionalmente
             time.sleep(LATENCIA_CASA_PARA_5G_SEG)
@@ -622,7 +627,7 @@ class NucleoCentral:
 # MONTAGEM DA SIMULAÇÃO
 # ======================================================================
 def montar_ambiente():
-    tipos = ["camera_garagem", "sensor_presenca_garagem", "medidor_energia", "sensor_fumaca_gas"]
+    tipos = ["camera_garagem", "sensor_presenca_garagem", "medidor_energia", "sensor_fumaca_gas", "sensor_queda_idoso"]
 
     def criar_casa(numero, bairro_id):
         dispositivos = [DispositivoResidencial(f"D{numero}{t}", t, casa_numero=numero) for t in tipos]
