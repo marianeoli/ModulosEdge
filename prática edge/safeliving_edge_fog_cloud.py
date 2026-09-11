@@ -141,6 +141,17 @@ class CasaInteligente:
 
         eventos_processados = []  # lista de (tipo_evento, dado_extra)
 
+    # -------- MÓDULO: sensor de queda --------
+    def processar_saude(self, leituras):
+        sensor = leituras.get("sensor_queda_idoso")
+        
+        if sensor and sensor["valor"] == "queda_detectada":
+            print(f"    [CASA #{self.casa_numero}] AÇÃO AUTÔNOMA (ms): Queda severa detectada! "
+                  f"-> Destrancando porta principal, acendendo todas as luzes e desligando o fogão.")
+            return "EMERGENCIA_MEDICA_QUEDA"
+    
+        return None
+
     # -------- NOVO MÓDULO: sensor de fumaça/gás na cozinha --------
         nivel_gas = leituras["sensor_fumaca_gas"]["valor"]
         if nivel_gas is not None and nivel_gas >= LIMIAR_GAS_PPM:
@@ -193,13 +204,26 @@ class CasaInteligente:
             "hora": hora,
         }
 
+    def abstrair_emergencia_medica(self, hora):
+            return {
+                "tipo_evento": "EMERGENCIA_MEDICA_QUEDA",
+                "casa_numero": self.casa_numero,
+                "hora": hora,
+                "prioridade": "CRITICA",
+                "necessita_ambulancia": True
+            }
+
     def ciclo(self, ciclo_atual):
         leituras = {disp.tipo: disp.gerar_leitura(ciclo_atual) for disp in self.dispositivos}
         eventos = []
 
         tipo_evento, placa = self.processar(leituras)
+        tipo_evento_saude = self.processar_saude(leituras)
 
         # ---------------- REGRA DE TRANSMISSÃO NA CASA (EDGE) ----------------
+        if tipo_evento_saude == "EMERGENCIA_MEDICA_QUEDA":
+            eventos.append(self.abstrair_emergencia_medica(leituras["sensor_queda_idoso"]["hora"]))
+
         if tipo_evento == "ACESSO_VEICULO_AUTORIZADO":
             time.sleep(LATENCIA_CASA_PARA_5G_SEG)
             eventos.append(self.abstrair_acesso(placa, leituras["camera_garagem"]["hora"]))
